@@ -109,6 +109,9 @@ class ReactExoplayerView extends FrameLayout implements
     private boolean isPaused;
     private boolean isBuffering;
     private float rate = 1f;
+    private float audioVolume = 1f;
+    private int maxBitRate = 0;
+    private long seekTime = C.TIME_UNSET;
 
     private int minBufferMs = DefaultLoadControl.DEFAULT_MIN_BUFFER_MS;
     private int maxBufferMs = DefaultLoadControl.DEFAULT_MAX_BUFFER_MS;
@@ -128,7 +131,6 @@ class ReactExoplayerView extends FrameLayout implements
     private boolean disableFocus;
     private float mProgressUpdateInterval = 250.0f;
     private boolean playInBackground = false;
-    private boolean useTextureView = false;
     private Map<String, String> requestHeaders;
     // \ End props
 
@@ -202,7 +204,10 @@ class ReactExoplayerView extends FrameLayout implements
     @Override
     protected void onDetachedFromWindow() {
         super.onDetachedFromWindow();
-        stopPlayback();
+        /* We want to be able to continue playing audio when switching tabs.
+         * Leave this here in case it causes issues.
+         */
+        // stopPlayback();
     }
 
     // LifecycleEventListener implementation
@@ -240,6 +245,9 @@ class ReactExoplayerView extends FrameLayout implements
         if (player == null) {
             TrackSelection.Factory videoTrackSelectionFactory = new AdaptiveTrackSelection.Factory(BANDWIDTH_METER);
             trackSelector = new DefaultTrackSelector(videoTrackSelectionFactory);
+            trackSelector.setParameters(trackSelector.buildUponParameters()
+                            .setMaxVideoBitrate(maxBitRate == 0 ? Integer.MAX_VALUE : maxBitRate));
+
             DefaultAllocator allocator = new DefaultAllocator(true, C.DEFAULT_BUFFER_SEGMENT_SIZE);
             DefaultLoadControl defaultLoadControl = new DefaultLoadControl(allocator, minBufferMs, maxBufferMs, bufferForPlaybackMs, bufferForPlaybackAfterRebufferMs, -1, true);
             player = ExoPlayerFactory.newSimpleInstance(getContext(), trackSelector, defaultLoadControl);
@@ -451,10 +459,10 @@ class ReactExoplayerView extends FrameLayout implements
         if (player != null) {
             if (focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK) {
                 // Lower the volume
-                player.setVolume(0.8f);
+                player.setVolume(audioVolume * 0.8f);
             } else if (focusChange == AudioManager.AUDIOFOCUS_GAIN) {
                 // Raise it back to normal
-                player.setVolume(1);
+                player.setVolume(audioVolume * 1);
             }
         }
     }
@@ -601,7 +609,8 @@ class ReactExoplayerView extends FrameLayout implements
 
     @Override
     public void onSeekProcessed() {
-        // Do nothing.
+        eventEmitter.seek(player.getCurrentPosition(), seekTime);
+        seekTime = C.TIME_UNSET;
     }
 
     @Override
@@ -830,6 +839,10 @@ class ReactExoplayerView extends FrameLayout implements
     }
 
     private int getTrackIndexForDefaultLocale(TrackGroupArray groups) {
+        if (groups.length == 0) { // Avoid a crash if we try to select a non-existant group
+            return C.INDEX_UNSET;
+        }
+
         int trackIndex = 0; // default if no match
         String locale2 = Locale.getDefault().getLanguage(); // 2 letter code
         String locale3 = Locale.getDefault().getISO3Language(); // 3 letter code
@@ -868,21 +881,23 @@ class ReactExoplayerView extends FrameLayout implements
     }
 
     public void setMutedModifier(boolean muted) {
+        audioVolume = muted ? 0.f : 1.f;
         if (player != null) {
-            player.setVolume(muted ? 0 : 1);
+            player.setVolume(audioVolume);
         }
     }
 
 
     public void setVolumeModifier(float volume) {
+        audioVolume = volume;
         if (player != null) {
-            player.setVolume(volume);
+            player.setVolume(audioVolume);
         }
     }
 
     public void seekTo(long positionMs) {
         if (player != null) {
-            eventEmitter.seek(player.getCurrentPosition(), positionMs);
+            seekTime = positionMs;
             player.seekTo(positionMs);
         }
     }
@@ -894,6 +909,14 @@ class ReactExoplayerView extends FrameLayout implements
           PlaybackParameters params = new PlaybackParameters(rate, 1f);
           player.setPlaybackParameters(params);
       }
+    }
+
+    public void setMaxBitRateModifier(int newMaxBitRate) {
+        maxBitRate = newMaxBitRate;
+        if (player != null) {
+            trackSelector.setParameters(trackSelector.buildUponParameters()
+                    .setMaxVideoBitrate(maxBitRate == 0 ? Integer.MAX_VALUE : maxBitRate));
+        }
     }
 
 
@@ -940,6 +963,10 @@ class ReactExoplayerView extends FrameLayout implements
 
     public void setUseTextureView(boolean useTextureView) {
         exoPlayerView.setUseTextureView(useTextureView);
+    }
+
+    public void setHideShutterView(boolean hideShutterView) {
+        exoPlayerView.setHideShutterView(hideShutterView);
     }
 
     public void setBufferConfig(int newMinBufferMs, int newMaxBufferMs, int newBufferForPlaybackMs, int newBufferForPlaybackAfterRebufferMs) {
